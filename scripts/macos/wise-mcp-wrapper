@@ -37,4 +37,7 @@ unset WISE_MCP_TEST_MODE
 export DATA_DIR="$HOME/Library/Application Support/wise-mcp"
 mkdir -p "$DATA_DIR"
 chmod 700 "$DATA_DIR"
+if [[ "${1:-}" == "--diagnose" ]]; then
+  exec node "$REPO/scripts/diagnose-personal-account.mjs"
+fi
 exec node "$SCRIPT"

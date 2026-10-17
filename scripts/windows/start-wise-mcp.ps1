@@ -2,7 +2,7 @@
 # Uses the current Windows account; a different account cannot decrypt the DPAPI file.
 [CmdletBinding()]
 param(
-    [ValidateSet('stdio','check','verify')][string]$Mode = 'stdio',
+    [ValidateSet('stdio','check','verify','diagnose')][string]$Mode = 'stdio',
     [string]$StoreDirectory = (Join-Path $env:LOCALAPPDATA 'WiseMCP')
 )
 $ErrorActionPreference = 'Stop'
@@ -31,7 +31,9 @@ try {
     $env:WISE_API_URL = 'https://api.wise.com'
     Remove-Item Env:WISE_MCP_TEST_MODE -ErrorAction SilentlyContinue
     $env:DATA_DIR = Join-Path $StoreDirectory 'data'
-    if ($Mode -eq 'verify') {
+    if ($Mode -eq 'diagnose') {
+        & $node (Join-Path $repo 'scripts\diagnose-personal-account.mjs')
+    } elseif ($Mode -eq 'verify') {
         # Never print profile details or the token: report only the HTTP result.
         & $node '--input-type=module' '-e' 'const r=await fetch("https://api.wise.com/v1/me",{headers:{Authorization:"Bearer "+process.env.WISE_API_TOKEN,Accept:"application/json"},redirect:"error",signal:AbortSignal.timeout(15000)}); if(r.ok){console.log("Wise authentication verified.");}else{console.error("Wise authentication failed: HTTP "+r.status);}process.exit(r.ok?0:1)'
     } else {
