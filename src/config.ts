@@ -2,10 +2,11 @@ import { z } from "zod";
 
 /** Settings shared by both modes: local (stdio) and remote server. */
 const baseSchema = z.object({
-  // Write tools (transfers you pay in the Wise app, recipients, cancellations), always two-step. false = read-only.
+  // Account-changing tools (recipients, transfer creation, cancellation) require explicit opt-in.
+  // false = 9 informational tools, including 2 that create temporary quotes at Wise.
   WRITES_ENABLED: z
     .enum(["true", "false"])
-    .default("true")
+    .default("false")
     .transform((v) => v === "true"),
   // Optional max amount per transfer, in the source currency. Empty = no limit.
   MAX_TRANSFER_AMOUNT: z
@@ -17,8 +18,16 @@ const baseSchema = z.object({
   // Where state lives; the audit log is written here in both modes.
   DATA_DIR: z.string().default("./data"),
 
-  // Overridable only for the local e2e tests against a mock Wise.
-  WISE_API_URL: z.string().url().default("https://api.wise.com"),
+  // Prevent accidentally sending financial credentials to a custom remote endpoint.
+  // Tests may use an explicit loopback-only override; production stays pinned to Wise.
+  WISE_API_URL: z.string().url().default("https://api.wise.com").refine((value) => {
+    const url = new URL(value);
+    const noExtras = !url.username && !url.password && !url.search && !url.hash && url.pathname === "/";
+    if (url.origin === "https://api.wise.com" && noExtras) return true;
+    return process.env.WISE_MCP_TEST_MODE === "true" && noExtras &&
+      (url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]") &&
+      (url.protocol === "http:" || url.protocol === "https:");
+  }, "WISE_API_URL must be https://api.wise.com (only loopback mock URLs are permitted in test mode)"),
 });
 
 /** Settings only the remote (HTTP) server needs. */

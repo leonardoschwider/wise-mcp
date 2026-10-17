@@ -49,6 +49,7 @@ const mock = createServer(async (req, res) => {
     quotes.set(q.id, q);
     return send(200, q);
   }
+  if (/^\/v1\/quotes\/[\w-]+\/account-requirements$/.test(p)) return send(200, [{ type: "iban", title: "IBAN", fields: [{ group: [{ key: "IBAN", name: "IBAN", required: true }] }] }]);
   if (p === "/v1/transfer-requirements") return send(200, []);
   if (p === "/v1/transfers" && req.method === "POST") {
     const q = quotes.get(body.quoteUuid);
@@ -63,7 +64,7 @@ rmSync(DATA, { recursive: true, force: true });
 
 const tsx = path.resolve("node_modules/tsx/dist/cli.mjs");
 const cli = path.resolve("src/cli.ts");
-const baseEnv = { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", WISE_API_URL: M, DATA_DIR: DATA };
+const baseEnv = { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", WISE_API_URL: M, WISE_MCP_TEST_MODE: "true", DATA_DIR: DATA };
 /** Runs the CLI to completion without blocking the in-process mock (so no spawnSync here). */
 const run = (env: Record<string, string>, args: string[] = []) =>
   new Promise<{ status: number | null; stderr: string; stdout: string }>((resolve) => {
@@ -82,6 +83,10 @@ check("--help prints usage", help.status === 0 && help.stdout.includes("wise-mcp
 
 const bad = await run({ WISE_API_TOKEN: randomUUID() });
 check("rejected token exits with a clear message", bad.status === 1 && bad.stderr.includes("Wise rejected WISE_API_TOKEN"));
+const blockedApiOverride = await run({ WISE_API_URL: "https://evil.example", WISE_API_TOKEN: TOKEN });
+check("non-Wise API endpoint refused even in test mode", blockedApiOverride.status === 1 && blockedApiOverride.stderr.includes("WISE_API_URL must be"));
+const blockedTestBypass = await run({ WISE_MCP_TEST_MODE: "false", WISE_API_TOKEN: TOKEN });
+check("loopback API override refused outside test mode", blockedTestBypass.status === 1 && blockedTestBypass.stderr.includes("WISE_API_URL must be"));
 
 // --- MCP over stdio -------------------------------------------------------------------
 async function connect(extraEnv: Record<string, string> = {}) {
@@ -92,7 +97,7 @@ async function connect(extraEnv: Record<string, string> = {}) {
 }
 const text = (r: any) => r.content?.[0]?.text ?? "";
 
-const client = await connect();
+const client = await connect({ WRITES_ENABLED: "true" }); // Writes must be explicitly enabled.
 const info = client.getServerVersion();
 check("serverInfo: title + embedded icon", info?.title === "Wise" && String(info?.icons?.[0]?.src).startsWith("data:image/svg+xml;base64,"));
 const tools = (await client.listTools()).tools.map((t) => t.name);
@@ -106,7 +111,9 @@ const code = JSON.parse(text(prep)).confirmation_code;
 check("prepare_transfer: code, nothing created", !prep.isError && /^TX-/.test(code) && created.length === 0);
 const conf = await client.callTool({ name: "confirm_action", arguments: { confirmation_code: code } });
 check("confirm_action creates the unpaid transfer", !conf.isError && created.length === 1 && created[0].details.reference === "pizza");
-check("audit log in DATA_DIR", existsSync(path.join(DATA, "audit.log")) && readFileSync(path.join(DATA, "audit.log"), "utf8").includes("transfer_created"));
+const logText = readFileSync(path.join(DATA, "audit.log"), "utf8");
+check("audit log in DATA_DIR", logText.includes("transfer_created"));
+check("audit log omits recipient, reference and codes", !["Mario Rossi", "IT60", "pizza", code].some((s) => logText.includes(s)));
 revoked.add(TOKEN);
 const after = await client.callTool({ name: "list_balances", arguments: {} });
 check("revoked token → clear error", !!after.isError && text(after).includes("WISE_API_TOKEN"), text(after).slice(0, 80));
@@ -117,14 +124,26 @@ await client.close();
 const noTokenTransport = new StdioClientTransport({ command: process.execPath, args: [tsx, cli], env: { ...baseEnv }, stderr: "pipe" });
 const noToken = new Client({ name: "e2e", version: "1" });
 await noToken.connect(noTokenTransport);
-check("no token: server starts and lists all 14 tools", (await noToken.listTools()).tools.length === 14);
+check("no token: server starts with 9 informational tools by default", (await noToken.listTools()).tools.length === 9);
 const noTokenCall = await noToken.callTool({ name: "list_balances", arguments: {} });
 check("no token: calls explain how to set WISE_API_TOKEN", !!noTokenCall.isError && text(noTokenCall).includes("WISE_API_TOKEN is not set"));
 await noToken.close();
 
+const defaultReadOnly = await connect();
+const safeToolNames = (await defaultReadOnly.listTools()).tools.map((t) => t.name);
+check("default: 9 tools incl. quotes, excludes all five account-changing actions", safeToolNames.length === 9 &&
+  ["get_quote", "get_recipient_requirements"].every((name) => safeToolNames.includes(name)) &&
+  ["prepare_transfer", "prepare_recipient", "prepare_cancel_transfer", "confirm_action", "discard_action"].every((name) => !safeToolNames.includes(name)));
+const beforeEstimates = created.length;
+const safeQuote = await defaultReadOnly.callTool({ name: "get_quote", arguments: { source_currency: "EUR", target_currency: "EUR", send_amount: 10 } });
+check("default mode returns quote without creating a transfer", !safeQuote.isError && JSON.parse(text(safeQuote)).source.amount === 10 && created.length === beforeEstimates);
+const safeRequirements = await defaultReadOnly.callTool({ name: "get_recipient_requirements", arguments: { currency: "EUR" } });
+check("default mode reads requirements without creating a recipient/transfer", !safeRequirements.isError && JSON.parse(text(safeRequirements)).options[0].type === "iban" && created.length === beforeEstimates);
+await defaultReadOnly.close();
+
 const ro = await connect({ WRITES_ENABLED: "false" });
 const roTools = (await ro.listTools()).tools.map((t) => t.name);
-check("WRITES_ENABLED=false → 7 read tools", roTools.length === 7 && !roTools.includes("confirm_action"));
+check("WRITES_ENABLED=false → 9 informational tools", roTools.length === 9 && roTools.includes("get_quote") && roTools.includes("get_recipient_requirements") && !roTools.includes("confirm_action"));
 await ro.close();
 
 console.log(process.exitCode ? "\nSome checks failed" : "\nAll checks passed 🎉");

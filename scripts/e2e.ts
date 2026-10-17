@@ -261,6 +261,8 @@ Object.assign(process.env, {
   TOKEN_ENCRYPTION_KEY: "e2e-encryption-key-that-is-long-enough",
   DATA_DIR: DATA,
   WISE_API_URL: M,
+  WISE_MCP_TEST_MODE: "true",
+  WRITES_ENABLED: "true", // Opt in explicitly for write-flow integration tests.
   MAX_TRANSFER_AMOUNT: "1000",
 });
 await import("../src/index.js");
@@ -391,7 +393,7 @@ const names = (tools.result?.tools ?? []).map((t: any) => t.name).sort();
 const expectedTools = ["confirm_action", "discard_action", "get_exchange_rate", "get_quote", "get_recipient_requirements", "get_transactions", "get_transfer", "list_balances", "list_profiles", "list_recipients", "list_transfers", "prepare_cancel_transfer", "prepare_recipient", "prepare_transfer"];
 check("read + two-step write tools", JSON.stringify(names) === JSON.stringify(expectedTools), names.join(","));
 check("every tool has an output schema and described parameters", (tools.result?.tools ?? []).every((t: any) => t.outputSchema?.type === "object" && Object.values(t.inputSchema?.properties ?? {}).every((p: any) => p.description)), (tools.result?.tools ?? []).filter((t: any) => !t.outputSchema).map((t: any) => t.name).join(","));
-check("only confirm/discard are non-readOnly", (tools.result?.tools ?? []).filter((t: any) => t.annotations?.readOnlyHint !== true).map((t: any) => t.name).sort().join() === "confirm_action,discard_action");
+check("quote creation and confirm/discard are not annotated read-only", (tools.result?.tools ?? []).filter((t: any) => t.annotations?.readOnlyHint !== true).map((t: any) => t.name).sort().join() === "confirm_action,discard_action,get_quote,get_recipient_requirements");
 
 const profiles = await call(T, "list_profiles", {});
 check("list_profiles", !profiles.isError && profiles.json.profiles.length === 2 && profiles.json.profiles[1].name === "BlanketByte SRL");
@@ -490,6 +492,12 @@ check("every successful call returned valid structuredContent", structuredCalls.
 
 const auditLog = readFileSync(path.join(DATA, "audit.log"), "utf8");
 check("audit log records every write", ["recipient_prepared", "recipient_created", "transfer_prepared", "transfer_created", "action_discarded", "transfer_cancelled", "transfer_amount_mismatch"].every((e) => auditLog.includes(`"${e}"`)) && !auditLog.includes(ownerToken));
+check("audit log omits financial details and confirmation codes",
+  !["Mario Rossi", "Ana Pop", "IT60", '"dinner"', prep.json.confirmation_code, prepRcp.json.confirmation_code].some((s) => auditLog.includes(s)) &&
+  auditLog.split("\n").filter(Boolean).every((s) => {
+    const item = JSON.parse(s);
+    return Object.keys(item).every((key) => ["at", "event", "connection", "transfer_id", "recipient_id", "quote_id", "status", "cancelled"].includes(key));
+  }));
 
 // --- /sessions -------------------------------------------------------------------------------
 const noCookie = await fetch(`${B}/sessions`).then((r) => r.text());

@@ -27,9 +27,17 @@ const READ = { readOnlyHint: true, openWorldHint: false } as const;
 const currency = z.string().regex(/^[A-Za-z]{3}$/, "3-letter currency code").transform((c) => c.toUpperCase());
 const money = (n: number | undefined, c: string | undefined) => (n === undefined ? "?" : `${n.toFixed(2)} ${c ?? ""}`.trim());
 
+/** Never persist financial details, confirmation codes or free-form API errors in audit logs. */
+const AUDIT_FIELDS = new Set(["connection", "transfer_id", "recipient_id", "quote_id", "status", "cancelled"]);
 async function audit(event: string, details: Record<string, unknown>) {
-  const line = JSON.stringify({ at: new Date().toISOString(), event, ...details }) + "\n";
-  await appendFile(path.join(config.DATA_DIR, "audit.log"), line, { mode: 0o600 }).catch(() => {});
+  const safe: Record<string, number | string> = {};
+  for (const [key, value] of Object.entries(details)) {
+    if (!AUDIT_FIELDS.has(key)) continue;
+    if (typeof value === "number" && Number.isSafeInteger(value)) safe[key] = value;
+    else if (typeof value === "string" && /^[a-zA-Z0-9_-]{1,48}$/.test(value)) safe[key] = value;
+  }
+  const line = JSON.stringify({ at: new Date().toISOString(), event, ...safe }) + "\n";
+  await appendFile(path.join(config.DATA_DIR, "audit.log"), line, { mode: 0o600 });
 }
 
 /**
@@ -206,31 +214,29 @@ export function registerTools(
     async ({ source, target, at }) => safe(async () => ok(await wise.getRate(source, target, at))),
   );
 
+  registerQuoteTools(server, wise, safe);
   if (config.WRITES_ENABLED) registerWriteTools(server, wise, { sessionKey, connectionId }, safe);
 }
 
 // -----------------------------------------------------------------------------
-// Write tools: every action is prepare → user approves in chat → confirm_action.
+// Informational quotes (available by default) vs account-changing actions (opt-in).
 // -----------------------------------------------------------------------------
 const TWO_STEP =
   "Nothing is written to Wise yet: this returns a summary and a one-time confirmation_code. Show the summary to the user and " +
   "call confirm_action ONLY if the user explicitly approves it in their next message.";
 
-function registerWriteTools(
+/** Price estimates are allowed in safe mode. Wise creates temporary quotes, but no payments or recipients. */
+function registerQuoteTools(
   server: McpServer,
   wise: WiseService,
-  { sessionKey, connectionId }: { sessionKey: string; connectionId: string },
   safe: <T>(fn: () => Promise<T>) => Promise<T | ReturnType<typeof fail>>,
 ) {
-  const log = (event: string, details: Record<string, unknown>) => audit(event, { connection: connectionId, ...details });
-  const limitText = config.MAX_TRANSFER_AMOUNT ? ` Max ${config.MAX_TRANSFER_AMOUNT} (source currency) per transfer.` : "";
-
   server.registerTool(
     "get_quote",
     {
       title: "Get a Wise quote",
       description:
-        "Price a transfer or conversion: rate, fee, amount received and estimated delivery. Creates nothing the user sees and moves no money. " +
+        "Price a transfer or conversion: rate, fee, amount received and estimated delivery. Creates a temporary Wise quote, but no recipient or transfer; moves no money. " +
         "Give either send_amount (in source_currency) or receive_amount (in target_currency).",
       inputSchema: {
         source_currency: currency.describe("Currency you send, e.g. EUR"),
@@ -241,7 +247,7 @@ function registerWriteTools(
         profile: profileArg,
       },
       outputSchema: outputs.get_quote,
-      annotations: { readOnlyHint: true, openWorldHint: true },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
     async (a) =>
       safe(async () => {
@@ -265,7 +271,7 @@ function registerWriteTools(
       title: "Get Wise recipient fields",
       description:
         "Which bank details Wise needs to add a recipient in a currency (e.g. IBAN for EUR, sort code + account number for GBP). " +
-        "Each option has a `type` and `fields` (key, required, example, allowed values). Use before prepare_recipient.",
+        "Uses a temporary Wise quote, without creating a recipient or transfer. Each option has a `type` and `fields` (key, required, example, allowed values). Use before prepare_recipient.",
       inputSchema: {
         currency: currency.describe("Recipient's currency"),
         source_currency: currency.optional().describe("Currency you'll send from (default: same as currency)"),
@@ -273,7 +279,7 @@ function registerWriteTools(
         profile: profileArg,
       },
       outputSchema: outputs.get_recipient_requirements,
-      annotations: { readOnlyHint: true, openWorldHint: true },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
     async (a) =>
       safe(async () => {
@@ -281,6 +287,18 @@ function registerWriteTools(
         return ok({ options: await wise.recipientRequirements(profile, a.source_currency ?? a.currency, a.currency, a.amount ?? 100) });
       }),
   );
+
+}
+
+/** Account-changing tools are opt-in; the confirmation flow alone is not a permission boundary. */
+function registerWriteTools(
+  server: McpServer,
+  wise: WiseService,
+  { sessionKey, connectionId }: { sessionKey: string; connectionId: string },
+  safe: <T>(fn: () => Promise<T>) => Promise<T | ReturnType<typeof fail>>,
+) {
+  const log = (event: string, details: Record<string, unknown>) => audit(event, { connection: connectionId, ...details });
+  const limitText = config.MAX_TRANSFER_AMOUNT ? ` Max ${config.MAX_TRANSFER_AMOUNT} (source currency) per transfer.` : "";
 
   server.registerTool(
     "prepare_recipient",

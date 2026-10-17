@@ -69,6 +69,7 @@ export class WiseClient {
       let res: Response;
       try {
         res = await fetch(url, {
+          redirect: "error", // Do not follow redirects when an Authorization header is present.
           method,
           headers: {
             Authorization: `Bearer ${this.token}`,

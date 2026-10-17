@@ -75,12 +75,16 @@ The simplest way to connect Wise to an AI assistant, and the most feature-rich W
 | `list_recipients` | Saved recipients with account number / IBAN, filterable by currency and text |
 | `get_exchange_rate` | Wise mid-market rate, now or at a past date |
 
-### Write: always two-step
+### Informational estimates (available by default)
 
 | Tool | What it does |
 | --- | --- |
-| `get_quote` | Prices a transfer or conversion: rate, fee, amount received, delivery estimate. Changes nothing |
-| `get_recipient_requirements` | The bank details Wise needs for a recipient in a currency (IBAN, sort code, …) |
+| `get_quote` | Prices a transfer or conversion without creating a transfer or moving money. Creates a temporary Wise quote via POST, which may require more than a read-only Wise token |
+| `get_recipient_requirements` | Retrieves recipient field requirements using a temporary Wise quote. Does not add a recipient; may require quote API permission |
+### Account-changing actions (disabled by default; opt in with `WRITES_ENABLED=true`)
+
+| Tool | What it does |
+| --- | --- |
 | `prepare_transfer` | Quotes a transfer to a saved recipient, checks Wise's route requirements and your balance, returns a summary + one-time code |
 | `prepare_recipient` | Validates a new recipient and returns a summary + one-time code |
 | `prepare_cancel_transfer` | Prepares cancelling a transfer you haven't paid yet |
@@ -129,21 +133,21 @@ transfers only:                                    you pay it in the Wise app  �
 
 - Codes are single-use, expire after 10 minutes, and only work from the session that prepared them.
 - Transfers are created **unpaid** (`incoming_payment_waiting`). Wise doesn't let personal tokens fund transfers for EU/UK accounts anyway, so the final "Pay" is always yours. Until then you can cancel the transfer with `prepare_cancel_transfer` or in the app.
-- Every prepare, confirm, discard and failure is appended to `audit.log` (`~/.wise-mcp/` locally, the data volume when hosted).
+- Prepare, confirm, discard and failure events are logged with limited identifiers, not recipient bank details, free-text summaries or confirmation codes (`~/.wise-mcp/` locally, the data volume when hosted).
 
 ## Security model
 
 | | |
 | --- | --- |
 | ✋ **Two-step writes** | Every write is prepare → your approval in chat → confirm with a one-time code. Transfers then also need you to pay them in the Wise app. |
-| 🔒 **Read-only option** | `WRITES_ENABLED=false` removes all write tools. With a Wise **Read only** token, write tools fail with a clear message and reading keeps working. |
+| 🔒 **Read-only option** | Safe mode by default (9 tools, including two informational calls that create temporary quotes); `WRITES_ENABLED=true` explicitly enables 5 additional account-changing tools. With a Wise **Read only** token, write tools fail with a clear message and reading keeps working. |
 | 💶 **Limits** | Optional `MAX_TRANSFER_AMOUNT` per transfer. Wise's own route checks (purpose, source of funds) are enforced before a code is issued. |
 | 🧾 **Allowlist** | Only Wise user ids in `ALLOWED_WISE_USERS` can connect. Any other token is refused and nothing about it is stored. Removing an id cuts off that user's existing sessions too. |
-| 🗝️ **Encryption at rest** | Wise tokens are sealed with AES-256-GCM under `TOKEN_ENCRYPTION_KEY`. OAuth tokens are stored only as SHA-256 hashes. State files and the audit log are owner-only (`0600`) and written atomically. |
+| 🗝️ **Encryption at rest** | Wise tokens are sealed with AES-256-GCM under `TOKEN_ENCRYPTION_KEY`. OAuth tokens are stored only as SHA-256 hashes. State files and the audit log use private Unix permissions and restricted Windows ACLs. |
 | 🧹 **Minimal retention** | A Wise token is deleted as soon as no live session uses it: after revocation, session expiry, or when Wise rejects it. |
 | 🔁 **OAuth hardening** | PKCE (S256), single-use login and authorization codes, rotating refresh tokens, redirect hosts limited to `claude.ai`, `claude.com`, `chatgpt.com` and localhost, so authorization codes can only reach apps you trust. |
 | 🚦 **Rate limiting** | The token forms (`/login`, `/sessions/login`) allow 20 attempts per IP every 15 minutes; OAuth endpoints use the MCP SDK's limits. |
-| 🔐 **HTTPS only** | The server refuses to start with a non-HTTPS `PUBLIC_URL`, and every page shows a red warning if it's opened over plain HTTP, so nobody pastes a Wise token on an unencrypted page. |
+| 🔐 **HTTPS only** | The server refuses to start with a non-HTTPS `PUBLIC_URL`, and every page shows a red warning if it's opened over plain HTTP. API requests are pinned to `https://api.wise.com`; only explicitly enabled local tests can use a loopback mock. |
 | 🛡️ **Pages** | Strict CSP (`default-src 'none'`, `form-action` limited to the server and the client's own redirect origin), `X-Frame-Options: DENY`, `no-store`, no referrer. |
 
 > [!WARNING]
@@ -192,7 +196,7 @@ Add this to the client's MCP config (for Claude Desktop: **Settings → Develope
 
 The repo is also an [Agent Plugin](https://agent-plugins.org) (`plugin.json` + `mcp.json`), so clients and directories that support the standard can install it directly. Set `WISE_API_TOKEN` in your client.
 
-Optional env: `WRITES_ENABLED=false` for read-only, `MAX_TRANSFER_AMOUNT` for a per-transfer limit. Run `npx @blanketbyte/wise-mcp --help` for all options.
+Optional env: `WRITES_ENABLED=true` to enable two-step writes explicitly, `MAX_TRANSFER_AMOUNT` for a per-transfer limit. Run `npx @blanketbyte/wise-mcp --help` for all options.
 
 > [!NOTE]
 > ChatGPT only connects to remote servers, so for ChatGPT use the [self-hosted](#deploy) setup.
@@ -280,7 +284,7 @@ For monitoring there's also `https://wise.example.com/health`, which returns `{"
 | Variable | Mode | Default | |
 | --- | --- | --- | --- |
 | `WISE_API_TOKEN` | local, **required** | | Wise personal API token |
-| `WRITES_ENABLED` | both | `true` | `false` removes every write tool |
+| `WRITES_ENABLED` | both | `false` | `true` explicitly enables 5 account-changing/preparation tools |
 | `MAX_TRANSFER_AMOUNT` | both | *(no limit)* | Max per transfer, in the source currency |
 | `DATA_DIR` | both | `~/.wise-mcp` locally, `/data` in Docker | Audit log (and, hosted, sealed tokens and sessions) |
 | `PUBLIC_URL` | remote, **required** | | Public HTTPS origin of the server |

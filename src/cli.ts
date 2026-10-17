@@ -11,7 +11,7 @@ Usage:
 
 Local mode env:
   WISE_API_TOKEN       Wise personal API token (required for tool calls)
-  WRITES_ENABLED       false = read-only (default true; writes are always two-step)
+  WRITES_ENABLED       false = 9 info tools (default, includes temporary quotes); true enables two-step actions
   MAX_TRANSFER_AMOUNT  optional max per transfer, in the source currency
   DATA_DIR             where the audit log is written (default ~/.wise-mcp)
 
