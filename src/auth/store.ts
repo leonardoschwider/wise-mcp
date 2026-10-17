@@ -1,8 +1,8 @@
-import { readFileSync, mkdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { OAuthClientInformationFull } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { sha256 } from "../crypto.js";
-import { writeJsonAtomic } from "../fsutil.js";
+import { ensurePrivateDataDir, writeJsonAtomic } from "../fsutil.js";
 
 /** One login from an MCP client (Claude, ChatGPT…): lives until `expiresAt` (null = until revoked), refresh tokens rotate inside it. */
 export interface Session {
@@ -37,7 +37,7 @@ export class AuthStore {
   private file: string;
 
   constructor(dataDir: string) {
-    mkdirSync(dataDir, { recursive: true });
+    ensurePrivateDataDir(dataDir);
     this.file = path.join(dataDir, "oauth-sessions.json");
     try {
       this.data = { ...this.data, ...JSON.parse(readFileSync(this.file, "utf8")) };

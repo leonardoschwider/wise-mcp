@@ -5,10 +5,14 @@
  * amount parsing, pagination, and token revocation in Wise.
  *   npm run e2e
  */
+import { execFile, execFileSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 const DATA = "./data-e2e";
 const PORT = 3988;
@@ -31,6 +35,28 @@ const check = (label: string, cond: boolean, extra = "") => {
   console.log(`${cond ? "✅" : "❌"} ${label}${extra ? "  " + extra : ""}`);
   if (!cond) process.exitCode = 1;
 };
+
+/** Verify actual ACLs on Windows; Node's numeric mode reports 0666 there. */
+async function hasPrivatePermissions(file: string) {
+  if (process.platform !== "win32") return (statSync(file).mode & 0o777) === (file === DATA ? 0o700 : 0o600);
+  try {
+    const sid = execFileSync("whoami.exe", ["/user", "/fo", "csv", "/nh"], { encoding: "utf8" }).match(/S-1-5-(?:\d+-)+\d+/)?.[0];
+    if (!sid) return false;
+    const command = "(Get-Acl -LiteralPath $env:WISE_MCP_TEST_FILE).Access | " +
+      "Where-Object { $_.AccessControlType -eq 'Allow' } | " +
+      "ForEach-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value } | ConvertTo-Json -Compress";
+    const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], {
+      encoding: "utf8", windowsHide: true, env: { ...process.env, WISE_MCP_TEST_FILE: path.resolve(file) },
+    });
+    const output = stdout.trim();
+    const parsed: unknown = JSON.parse(output);
+    const grants = Array.isArray(parsed) ? parsed : [parsed];
+    const allowed = new Set([sid, "S-1-5-18", "S-1-5-32-544"]); // user, SYSTEM, Administrators
+    return grants.length > 0 && grants.every((entry) => typeof entry === "string" && allowed.has(entry));
+  } catch {
+    return false;
+  }
+}
 
 // --- Mock Wise -------------------------------------------------------------------
 const tokens: Record<string, number> = {}; // Wise API token -> Wise user id
@@ -336,7 +362,7 @@ check("short session's refresh token expires with it", Object.values<any>(saved.
 check("raw OAuth tokens not on disk", ![tok.access_token, ref.access_token, ref.refresh_token].some((t) => JSON.stringify(saved).includes(t)));
 
 const onDisk = readdirSync(DATA, { recursive: true }).map((f) => { try { return readFileSync(path.join(DATA, String(f)), "utf8"); } catch { return ""; } }).join("\n");
-check("state files are owner-only, no temp files left", (statSync(path.join(DATA, "oauth-sessions.json")).mode & 0o777) === 0o600 && (statSync(path.join(DATA, "wise", "connections.json")).mode & 0o777) === 0o600 && !readdirSync(DATA, { recursive: true }).some((f) => String(f).endsWith(".tmp")));
+check("state files are owner-only, no temp files left", (await Promise.all([DATA, path.join(DATA, "oauth-sessions.json"), path.join(DATA, "wise", "connections.json")].map(hasPrivatePermissions))).every(Boolean) && !readdirSync(DATA, { recursive: true }).some((f) => String(f).endsWith(".tmp")));
 check("Wise tokens encrypted at rest", !onDisk.includes(ownerToken) && !onDisk.includes(secondToken) && onDisk.includes('"token": "v1.'));
 
 // --- MCP tools ------------------------------------------------------------------------------

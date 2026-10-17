@@ -2,7 +2,7 @@ import { readFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { config } from "../config.js";
 import { SecretBox, sha256 } from "../crypto.js";
-import { writeJsonAtomic } from "../fsutil.js";
+import { ensurePrivateDataDir, writeJsonAtomic } from "../fsutil.js";
 import { WiseClient, type WiseMe } from "./client.js";
 import { WiseService } from "./service.js";
 
@@ -25,8 +25,9 @@ export class ConnectionStore {
     dataDir: string,
     private box: SecretBox,
   ) {
+    ensurePrivateDataDir(dataDir);
     const dir = path.join(dataDir, "wise");
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
     this.file = path.join(dir, "connections.json");
     try {
       this.data = JSON.parse(readFileSync(this.file, "utf8"));

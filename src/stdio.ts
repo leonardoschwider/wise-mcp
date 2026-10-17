@@ -1,8 +1,9 @@
-import { mkdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { config } from "./config.js";
+import { ensurePrivateDataDir } from "./fsutil.js";
 import { PUBLIC_DIR, VERSION, WEBSITE } from "./meta.js";
 import { registerTools } from "./tools.js";
 import { WiseAccessRevokedError, WiseApiError, WiseClient } from "./wise/client.js";
@@ -47,7 +48,7 @@ if (!token) {
   }
 }
 
-mkdirSync(config.DATA_DIR, { recursive: true });
+ensurePrivateDataDir(config.DATA_DIR);
 
 let icons: { src: string; mimeType: string; sizes: string[] }[] = [];
 try {
