@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Executor CLI wrapper for the user's Wise MCP fork. No token stored in this file.
+set -euo pipefail
+umask 077
+
+REPO="${WISE_MCP_REPO:-$HOME/Documents/Repositories/wise-mcp}"
+SCRIPT="$REPO/dist/cli.js"
+KEYCHAIN_SERVICE="wise-mcp-api-token"
+
+if [[ ! -f "$SCRIPT" ]]; then
+  printf '%s\n' "Wise MCP build missing at $SCRIPT; run npm ci && npm run build." >&2
+  exit 1
+fi
+if ! command -v security >/dev/null 2>&1; then
+  printf '%s\n' "macOS Keychain utility is unavailable." >&2
+  exit 1
+fi
+if ! command -v node >/dev/null 2>&1; then
+  printf '%s\n' "Node.js is not installed or not on PATH." >&2
+  exit 1
+fi
+
+# Keychain prompts on first use if macOS needs user permission.
+# Only the MCP subprocess receives this environment; neither token nor outputs are logged.
+WISE_API_TOKEN="$(security find-generic-password -a "$USER" -s "$KEYCHAIN_SERVICE" -w)" || {
+  printf '%s\n' "Wise Keychain token unavailable; configure it interactively first." >&2
+  exit 1
+}
+if [[ -z "$WISE_API_TOKEN" ]]; then
+  printf '%s\n' "Wise Keychain token is empty." >&2
+  exit 1
+fi
+export WISE_API_TOKEN
+export WRITES_ENABLED=false
+export WISE_API_URL=https://api.wise.com
+unset WISE_MCP_TEST_MODE
+export DATA_DIR="$HOME/Library/Application Support/wise-mcp"
+mkdir -p "$DATA_DIR"
+chmod 700 "$DATA_DIR"
+exec node "$SCRIPT"

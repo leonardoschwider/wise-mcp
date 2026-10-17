@@ -19,6 +19,8 @@ Run it locally with one `npx` command (Claude Desktop, Claude Code, Codex, Curso
 
 ---
 
+> **Personal fork — deployment status:** This fork defaults to **9 informational tools**, including two temporary-quote endpoints; five account-changing tools require explicit opt-in. It is **not yet connected to a real Wise account or installed in Executor CLI**. Wise currently documents personal API tokens chiefly for Wise Business accounts, with limited permitted endpoints. Availability for this account and region must be tested. See [deployment checklist](OPERATIONS.md), [Beelink setup](scripts/windows/README.md), and [MacBook / Executor CLI setup](scripts/macos/README.md).
+
 > *"How much did I spend on groceries in September?"*
 > *"What's left in my jars, in EUR?"*
 > *"Show the transfers I sent to Mario this year and the rate I got."*
